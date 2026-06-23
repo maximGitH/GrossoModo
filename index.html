@@ -43,6 +43,8 @@
   .ob-tip { background: var(--surface); border-left: 2px solid var(--border-strong); padding: 12px 14px; font-size: 12px; color: var(--muted); line-height: 1.7; margin-bottom: 28px; }
   .ob-tip strong { color: var(--text); font-weight: 500; display: block; margin-bottom: 4px; font-family: 'DM Mono', monospace; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
   .ob-btn { width: 100%; background: var(--text); color: var(--bg); border: none; padding: 16px; font-family: 'DM Mono', monospace; font-size: 12px; text-transform: uppercase; letter-spacing: 2.5px; cursor: pointer; margin-top: 20px; }
+  .ob-field.error .ob-options { outline: 1.5px solid var(--red); outline-offset: 3px; }
+  .ob-field.error .ob-input { border-bottom-color: var(--red); }
 
   .header { padding: 44px 20px 14px; border-bottom: 1px solid var(--border-strong); margin-bottom: 22px; display: flex; justify-content: space-between; align-items: flex-end; }
   .header-wordmark { font-family: 'Cormorant', serif; font-size: 38px; font-weight: 400; letter-spacing: -0.5px; line-height: 1; }
@@ -467,12 +469,15 @@ function saveOnboarding() {
   const birthdate=document.getElementById('ob-birthdate').value;
   const height=parseInt(document.getElementById('ob-height').value);
   const weight=parseFloat(document.getElementById('ob-weight').value);
-  if (!obSex) { toast('Kies een optie'); return; }
-  if (!birthdate) { toast('Vul je geboortedatum in'); return; }
+  document.querySelectorAll('.ob-field').forEach(f=>f.classList.remove('error'));
+  let hasError = false;
+  if (!obSex) { document.querySelector('[data-field="sex"]').closest('.ob-field').classList.add('error'); hasError=true; }
+  if (!birthdate) { document.getElementById('ob-birthdate').closest('.ob-field').classList.add('error'); hasError=true; }
+  if (!height||height<100||height>250) { document.getElementById('ob-height').closest('.ob-field').classList.add('error'); hasError=true; }
+  if (!weight||weight<30||weight>300) { document.getElementById('ob-weight').closest('.ob-field').classList.add('error'); hasError=true; }
+  if (hasError) { toast('Vul alle velden in'); return; }
   const age = Math.floor((new Date() - new Date(birthdate)) / (365.25*24*60*60*1000));
-  if (age<10||age>100) { toast('Ongeldige geboortedatum'); return; }
-  if (!height||height<100||height>250) { toast('Geldige lengte'); return; }
-  if (!weight||weight<30||weight>300) { toast('Geldig gewicht'); return; }
+  if (age<10||age>100) { document.getElementById('ob-birthdate').closest('.ob-field').classList.add('error'); toast('Ongeldige geboortedatum'); return; }
   DB.set(KEY_PROFILE,{sex:obSex,age,birthdate,height,weight});
   DB.set(KEY_WEIGHT,{kg:weight,date:todayStr()});
   document.getElementById('onboarding').style.display='none';
@@ -493,11 +498,31 @@ function selectDagtype(el) {
   } else {
     el.classList.add('selected');
     selectedDagtype = el;
+    saveDagtypeEntry(el);
   }
 }
 function resetDagtype() {
   document.querySelectorAll('.dagtype-btn').forEach(b=>b.classList.remove('selected'));
   selectedDagtype = null;
+}
+function saveDagtypeEntry(el) {
+  const neat = parseInt(el.dataset.neat);
+  const level = el.dataset.level;
+  const label = el.textContent.trim();
+  const profile = DB.get(KEY_PROFILE);
+  const bmr = calcBMR(profile);
+  const tdee = bmr ? Math.round(bmr * activityMultiplier(level)) : null;
+  const parsed = {
+    food_items: [], drink_items: [],
+    exercise_items: [{item: 'NEAT — dagelijkse beweging', kcal_burned: neat, duration: 'dag'}],
+    activity_level: level,
+    total_consumed_kcal: 0,
+    total_burned_kcal: neat,
+    notes: ''
+  };
+  saveEntry(label, parsed, todayStr(), level, tdee);
+  updateTodayMetrics();
+  toast('Dagtype opgeslagen');
 }
 
 // VOICE
@@ -616,25 +641,35 @@ async function analyzeEntry() {
   document.getElementById('analyze-btn').disabled=true;
 
   const entryDate = parseDateFromText(text);
-  const activityLevel = detectActivityLevel(text);
+  const dagtypeNeat = selectedDagtype ? parseInt(selectedDagtype.dataset.neat) : null;
+  const dagtypeLevel = selectedDagtype ? selectedDagtype.dataset.level : null;
+  const activityLevel = dagtypeLevel || detectActivityLevel(text);
   const profile = DB.get(KEY_PROFILE);
   const bmr = calcBMR(profile);
   const tdee = bmr && activityLevel ? Math.round(bmr * activityMultiplier(activityLevel)) : null;
 
-  const prompt = `Analyseer deze Nederlandse tekst over eten, drank en/of beweging. Let ook op tijdsaanduidingen zoals "gisteren" of "vrijdag". Geef ALLEEN een JSON-object terug, geen uitleg, geen markdown.
+  const dagtypeLabel = selectedDagtype ? selectedDagtype.textContent.trim() : '';
+  const dagtypeInstructie = dagtypeNeat
+    ? 'De gebruiker heeft het dagtype manueel aangeduid (' + dagtypeLabel + '). Voeg VERPLICHT een NEAT-item toe van exact ' + dagtypeNeat + ' kcal met naam "NEAT — dagelijkse beweging" en gebruik "' + dagtypeLevel + '" als activity_level.'
+    : 'Als de tekst een werkdag, thuiswerk, locatiebezoek, pendel of dagelijkse routine beschrijft, voeg dan een NEAT-item toe. Richtwaarden: thuisdag zonder verplaatsing 180 kcal, thuisdag met verplaatsing 300 kcal, kantoor/pendel 380 kcal, actieve dag 480 kcal, rustdag 80 kcal. Naam: "NEAT — dagelijkse beweging".';
+
+  const prompt = `Je krijgt een ruwe voice-transcriptie in het Nederlands, mogelijk Vlaams of Antwerps dialect. Volg twee stappen:
+
+STAP 1 — OPKUIS EN CORRECTIE:
+- Verwijder stopklanken: euh, ah, hmm, dus eh, zeg maar
+- Corrigeer dialect naar standaard Nederlands: "ik em"=>"ik heb", "da"=>"dat", "ge/gij"=>"je/jij", "wa"=>"wat", "ne"=>"een", "tem"=>"hem"
+- Verwijder herhalingen en zelfcorrecties
+- Corrigeer fonetische spraakfouten op basis van voedingscontext: kies altijd het meest logische voedingsbegrip. Voorbeelden: "suiker ermee" naast "confituur" wordt "suikerarme confituur"; "halfbol melk" wordt "halfvolle melk"; "grieke joghurt" wordt "Griekse yoghurt"
+- Behoud tijdsaanduidingen en hoeveelheden exact
+
+STAP 2 — ANALYSEER:
+${dagtypeInstructie}
 
 Tekst: "${text}"
 
-BELANGRIJK — NEAT (dagelijkse bewegingsverbranding):
-Als de tekst een werkdag, thuiswerk, locatiebezoek, pendel of dagelijkse routine beschrijft, voeg dan ALTIJD een apart exercise_item toe voor NEAT, ook als er geen expliciete sport vermeld wordt. Gebruik deze richtwaarden:
-- Thuiswerk zonder noemenswaardige verplaatsingen: 180 kcal
-- Thuiswerk met verplaatsingen (fiets, te voet, bibliotheek, locatie): 300 kcal
-- Kantoordag met pendel: 380 kcal
-- Actieve dag (lesgeven, veel stappen, op de been): 480 kcal
-Noem dit item "NEAT — dagelijkse beweging" in exercise_items.
-
-JSON:
+Geef ALLEEN dit JSON terug, geen uitleg, geen markdown:
 {
+  "cleaned_text": "opgekuiste versie van de input",
   "food_items": [{"item": "naam", "kcal": getal, "quantity": "hoeveelheid"}],
   "drink_items": [{"item": "naam", "kcal": getal, "quantity": "hoeveelheid"}],
   "exercise_items": [{"item": "activiteit", "kcal_burned": getal, "duration": "duur"}],
@@ -644,13 +679,13 @@ JSON:
   "notes": "korte opmerking"
 }
 
-Gebruik realistische gemiddelde kcal-waarden. Lege arrays als niets vermeld. Voor activity_level: sedentary=thuiswerken/weinig bewegen, light=pendelen/wandelen, moderate=actieve dag/lesgeven, active=fysieke job/intensief sporten.`;
+Gebruik realistische gemiddelde kcal-waarden. Lege arrays als niets vermeld.`;
 
   try {
     const resp = await fetch('/api/proxy',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1000,messages:[{role:'user',content:prompt}]})
+      body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:1000,messages:[{role:'user',content:prompt}]})
     });
     const data = await resp.json();
     if(data.error) throw new Error(data.error.message||JSON.stringify(data.error));
