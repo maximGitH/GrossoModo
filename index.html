@@ -495,6 +495,11 @@ function selectDagtype(el) {
   document.querySelectorAll('.dagtype-btn').forEach(b=>b.classList.remove('selected'));
   if (selectedDagtype && selectedDagtype === el) {
     selectedDagtype = null;
+    let entries = DB.get(KEY_ENTRIES)||[];
+    entries = entries.filter(e => !(e.date===todayStr() && e.isDagtypeEntry));
+    DB.set(KEY_ENTRIES, entries);
+    updateTodayMetrics();
+    toast('Dagtype verwijderd');
   } else {
     el.classList.add('selected');
     selectedDagtype = el;
@@ -512,6 +517,12 @@ function saveDagtypeEntry(el) {
   const profile = DB.get(KEY_PROFILE);
   const bmr = calcBMR(profile);
   const tdee = bmr ? Math.round(bmr * activityMultiplier(level)) : null;
+
+  // Remove any earlier dagtype-entry for today before adding the new one
+  let entries = DB.get(KEY_ENTRIES)||[];
+  entries = entries.filter(e => !(e.date===todayStr() && e.isDagtypeEntry));
+  DB.set(KEY_ENTRIES, entries);
+
   const parsed = {
     food_items: [], drink_items: [],
     exercise_items: [{item: 'NEAT — dagelijkse beweging', kcal_burned: neat, duration: 'dag'}],
@@ -520,7 +531,7 @@ function saveDagtypeEntry(el) {
     total_burned_kcal: neat,
     notes: ''
   };
-  saveEntry(label, parsed, todayStr(), level, tdee);
+  saveEntry(label, parsed, todayStr(), level, tdee, true);
   updateTodayMetrics();
   toast('Dagtype opgeslagen');
 }
@@ -696,6 +707,12 @@ Gebruik realistische gemiddelde kcal-waarden. Lege arrays als niets vermeld.`;
     const finalTdee = bmr && detectedLevel ? Math.round(bmr * activityMultiplier(detectedLevel)) : tdee;
 
     const displayText = parsed.cleaned_text || text;
+    if (dagtypeNeat) {
+      // De NEAT van het dagtype is al verwerkt in deze voice-entry; verwijder de losse dagtype-entry van vandaag
+      let entries = DB.get(KEY_ENTRIES)||[];
+      entries = entries.filter(e => !(e.date===todayStr() && e.isDagtypeEntry));
+      DB.set(KEY_ENTRIES, entries);
+    }
     saveEntry(displayText, parsed, entryDate, detectedLevel, finalTdee);
     renderResult(parsed, finalTdee);
     updateTodayMetrics();
@@ -712,12 +729,13 @@ Gebruik realistische gemiddelde kcal-waarden. Lege arrays als niets vermeld.`;
   }
 }
 
-function saveEntry(rawText, parsed, date, activityLevel, tdee) {
+function saveEntry(rawText, parsed, date, activityLevel, tdee, isDagtypeEntry) {
   const entries = DB.get(KEY_ENTRIES)||[];
   entries.push({
     id:Date.now(), date:date||todayStr(), time:timeStr(), raw:rawText,
     consumed:parsed.total_consumed_kcal||0, burned:parsed.total_burned_kcal||0,
-    activityLevel:activityLevel||null, tdee:tdee||null, notes:parsed.notes||''
+    activityLevel:activityLevel||null, tdee:tdee||null, notes:parsed.notes||'',
+    isDagtypeEntry:!!isDagtypeEntry
   });
   DB.set(KEY_ENTRIES,entries);
 }
